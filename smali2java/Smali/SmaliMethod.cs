@@ -51,7 +51,14 @@ namespace Smali2Java
             {
                 SmaliLine l = Lines[i];
                 if (l.bIsDirective)
+                {
                     SmaliEngine.VM.ProcessDirective(this, l);
+                    if (l.Instruction == SmaliLine.LineInstruction.Local && !String.IsNullOrEmpty(SmaliEngine.VM.Java))
+                    {
+                        JavaOutput[JavaOutput.Count - 1] = JavaOutput[JavaOutput.Count - 1].Replace(SmaliEngine.VM.Java, ' ' + l.lRegisters[l.lRegisters.Keys.First()] + ' ');
+                        SmaliEngine.VM.Java = null;
+                    }
+                }
                 else
                     SmaliEngine.VM.ProcessInstruction(this, l);
 

@@ -7,9 +7,44 @@ namespace Smali2Java
 {
     public class SmaliVM
     {
+        bool bCurrentlyInBlock = false;
         #region VM Stack (variable holder)
-        public Dictionary<String, Object> vmStack = new Dictionary<String, Object>();
 
+        Stack<string> blockStack = new Stack<string>();
+
+        public void Push(string block)
+        {
+            blockStack.Push(block);
+        }
+
+        public string Pop()
+        {
+            return blockStack.Pop();
+        }
+        public string Peek()
+        {
+            return blockStack.Peek();
+        }
+
+        public Dictionary<String, Object> vmStack = new Dictionary<String, Object>();
+        public List<String> GetBlock(string blockName)
+        {
+            return (List<String>)vmStack[blockName];
+        }
+
+        public void PutBlock(string blockName)
+        {
+            vmStack[blockName]= new List<String>();
+        }
+        public List<String> GetCurrentBlock()
+        {
+            return GetBlock(Peek());
+        }
+        public void PushBlock(string blockName)
+        {
+            Push(blockName);
+            PutBlock(blockName);
+        }
         public void PutLastCall(SmaliCall value)
         {
             vmStack["lastCall"] = value;
@@ -45,12 +80,27 @@ namespace Smali2Java
         public Instructions smaliInstructions = new Instructions();
         public String Java;
         public StringBuilder Buf = new StringBuilder();
-        public void FlushBuffer()
+
+        public void FlushBuffer()//We will use this to make certain bits of code go into temporary locations if they are within a sub block.
         {
-            Java = Buf.ToString();
+            if (blockStack.Count > 0)
+                GetCurrentBlock().Add(Buf.ToString());
+            else
+                Java = Buf.ToString();
             Buf = new StringBuilder("");
         }
-
+        public void FlattenStack()
+        {
+            while (blockStack.Count > 0)
+            {
+                string label = Pop();
+                foreach (string line in GetBlock(label))
+                {
+                    Buf.AppendLine(line); //TODO: Use the label to restructure the code.
+                }
+                FlushBuffer();
+            }
+        }
         public int _idxParam = 0;
 
         public void ProcessDirective(SmaliMethod m, SmaliLine l)
@@ -79,6 +129,16 @@ namespace Smali2Java
                     break;
                 case SmaliLine.LineInstruction.EndMethod:
                     smaliDirectives.EndMethod();
+                    break;
+                case SmaliLine.LineInstruction.Local:
+                    smaliDirectives.Local();
+                    break;
+                case SmaliLine.LineInstruction.Catch:
+                    smaliDirectives.Catch();
+                    break;
+                case SmaliLine.LineInstruction.Unimplemented:
+                case SmaliLine.LineInstruction.Unknown:
+                    smaliDirectives.Unimplemented();
                     break;
             }
         }
@@ -121,10 +181,20 @@ namespace Smali2Java
                 case SmaliLine.LineSmali.MoveResultObject:
                     smaliInstructions.MoveResult();
                     break;
+                case SmaliLine.LineSmali.Goto:
+                    smaliInstructions.Goto();
+                    break;
+                case SmaliLine.LineSmali.MoveException:
+                    smaliInstructions.MoveException();
+                    break;
+                case SmaliLine.LineSmali.Label:
+                    smaliInstructions.Label();
+                    break;
+                case SmaliLine.LineSmali.Conditional:
+                    smaliInstructions.Conditional();
+                    break;
                 case SmaliLine.LineSmali.Unimplemented: //These will cover most of the instructions right now...
                 case SmaliLine.LineSmali.Unknown:
-                case SmaliLine.LineSmali.Conditional:
-                case SmaliLine.LineSmali.Label:
                     smaliInstructions.Unimplemented();
                     break;
             }
@@ -229,9 +299,46 @@ namespace Smali2Java
                 SmaliEngine.VM.FlushBuffer();
             }
 
+            //TODO: This is a very hackish way to rename a variable that we have defined, 
+            //we should really find the last instance of move-result and add the variable name to it before sending it to the engine.
+            public void Local() 
+            {
+                String sReg = l.lRegisters.Keys.First();
+                if (SmaliEngine.VM.vmStack.ContainsKey(sReg))
+                {
+                    SmaliEngine.VM.Buf = new StringBuilder();
+                    SmaliEngine.VM.Buf.Append(' ' + SmaliEngine.VM.Get(sReg) + ' ');
+                    SmaliEngine.VM.Put(sReg, l.lRegisters[sReg]);
+                }
+                SmaliEngine.VM.FlushBuffer();
+            }
+
+            public void Catch()
+            {
+                String sReg = l.lRegisters.Keys.First();
+                SmaliEngine.VM.Buf = new StringBuilder();
+                SmaliEngine.VM.Buf.Append(sReg +"_s"); //We will replace this with the appropriate catch block when we find it.
+                SmaliEngine.VM.Put(sReg + "_s", l.lRegisters[sReg]);
+                SmaliEngine.VM.FlushBuffer();
+            }
+
             public void EndMethod()
             {
                 SmaliEngine.VM.Buf.Append("}");
+                SmaliEngine.VM.FlushBuffer();
+                SmaliEngine.VM.FlattenStack();
+            }
+            public void Unimplemented()
+            {
+                if (Program.Debug)
+                    SmaliEngine.VM.Buf.AppendFormat("\\*\n* Warning, {0} directive was not processed: \n* {1}\n*\\\n",
+                        l.Instruction,
+                        l.aName
+                        );
+                else // Log Verbose comments only if the debug flag is enabled.
+                    SmaliEngine.VM.Buf.AppendFormat("\\\\{0}\n",
+                        l.aName
+                        );
                 SmaliEngine.VM.FlushBuffer();
             }
         }
@@ -404,6 +511,34 @@ namespace Smali2Java
                 }
             }
 
+            public void MoveException()
+            {
+                SmaliEngine.VM.Buf = new StringBuilder();
+                SmaliEngine.VM.Buf.AppendFormat("{0}({1} {2}) ",
+                        "catch",
+                        SmaliUtils.General.Name2Java(SmaliEngine.VM.Get(SmaliEngine.VM.Peek() + "_s")).Trim("; ".ToCharArray()),
+                        SmaliEngine.VM.Get(l.lRegisters.Keys.First()));
+                SmaliEngine.VM.Buf.Append("{\n");
+            }
+            public void Goto()
+            {
+                SmaliEngine.VM.Buf.Append("}\n");
+                SmaliEngine.VM.Pop(); //This should mean the end of a block.
+                Unimplemented();
+            }
+            public void Conditional()
+            {
+                SmaliEngine.VM.Buf.Append("{\n");
+                Unimplemented();
+            }
+
+            public void Label() 
+            {
+                SmaliEngine.VM.PushBlock(l.aName);
+                Unimplemented();
+            }
+
+            //TODO: Move this out into more generic functions?
 
             /*
              * TODO: Figure out when these should be variable assignments, and when they should be constants...

@@ -54,7 +54,9 @@ namespace Smali2Java
             Line,
             EndMethod,
             Catch,
-            Parameter
+            Parameter,
+            Local, //We may never see this instruction.
+            Unimplemented,
         }
 
         public enum LineBlock
@@ -84,12 +86,14 @@ namespace Smali2Java
             InvokeVirtual,
             MoveResultObject,
             MoveResult,
+            MoveException,
             NewInstance,
             ReturnVoid,
             Return,
             Unimplemented,
             Conditional,
-            Label
+            Goto,
+            Label,
         }
 
         public enum LineReturnType
@@ -228,6 +232,10 @@ namespace Smali2Java
                 case ".line":
                     rv.Instruction = LineInstruction.Line;
                     break;
+                case ".local": //.local v0, "value":I
+                    rv.Instruction = LineInstruction.Local;
+                    rv.lRegisters[sWords[1].Trim(',')] = sRawText.Split('"')[1];
+                    break;
                 case ".end":
                     switch (sRawText)
                     {
@@ -244,8 +252,17 @@ namespace Smali2Java
                     rv.aName = rv.aName.Substring(0, rv.aName.IndexOf('"'));
                     rv.aType = sRawText.Substring(sRawText.IndexOf('#') + 1).Trim();
                     break;
+                case ".catch":
+                    rv.Instruction = LineInstruction.Catch;
+                    rv.lRegisters[sWords[sWords.Length - 1].Trim()] = sWords[1];
+                    rv.lRegisters["try_start"] = sWords[2].Trim("{ }".ToCharArray());
+                    rv.lRegisters["try_end"] = sWords[4].Trim("{ }".ToCharArray());
+                    rv.aName = sRawText;
+                    break;
                 default:
-                    return false;
+                    rv.Instruction = LineInstruction.Unimplemented;
+                    rv.aName = sRawText;
+                    return true;
             }
             return true;
         }
@@ -374,6 +391,10 @@ namespace Smali2Java
                     rv.Smali = LineSmali.MoveResultObject;
                     rv.lRegisters[sWords[1]] = String.Empty;
                     break;
+                case "move-exception":
+                    rv.Smali = LineSmali.MoveException;
+                    rv.lRegisters[sWords[1]] = String.Empty;
+                    break;
                 case "move-result":
                     rv.Smali = LineSmali.MoveResult;
                     rv.lRegisters[sWords[1]] = String.Empty;
@@ -437,7 +458,13 @@ namespace Smali2Java
                     ParseParameters(rv, sp);
                     rv.lRegisters[rv.lRegisters.Keys.First()] = rv.aName;
                     break;
-
+                case "goto":
+                case "goto/16":
+                case "goto/32":
+                    rv.aName = sRawText;
+                    rv.Smali = LineSmali.Goto;
+                    rv.aExtra = sRawText;
+                    break;
                 #region Unimplemented Functions
 
                 case "add-double":
@@ -549,7 +576,6 @@ namespace Smali2Java
                 case "move":
                 case "move/16":
                 case "move/from16":
-                case "move-exception":
                 case "move-object":
                 case "move-object/16":
                 case "move-object/from16":
@@ -638,9 +664,6 @@ namespace Smali2Java
                     rv.Smali = LineSmali.Unimplemented;
                     rv.aName = sRawText;
                     break;
-                case "goto":
-                case "goto/16":
-                case "goto/32":
                 case "if-eq":
                 case "if-eqz":
                 case "if-ge":
